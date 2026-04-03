@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+
+# Model checkpoints and results
+PyramidPix2pix/checkpoints/
+PyramidPix2pix/results/
+
+# Pretrained weights
+PyramidPix2pix/models/vgg19_conv.pth
+
+# Datasets
+PyramidPix2pix/datasets/*/
+
+# IDE
+.idea/

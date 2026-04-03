@@ -158,7 +158,7 @@ class Pix2PixModel(BaseModel):
         conv_op.weight.data = sobel_kernel
         for param in conv_op.parameters():
             param.requires_grad = False
-        conv_op.to(self.opt.gpu_ids[0])
+        conv_op.to(self.device)
         edge_detect = conv_op(input)
 
         conv_hor = nn.Conv2d(3, 1, 3, bias=False)
@@ -169,7 +169,7 @@ class Pix2PixModel(BaseModel):
         conv_hor.weight.data = hor_kernel
         for param in conv_hor.parameters():
             param.requires_grad = False
-        conv_hor.to(self.opt.gpu_ids[0])
+        conv_hor.to(self.device)
         hor_detect = conv_hor(input)
 
         conv_ver = nn.Conv2d(3, 1, 3, bias=False)
@@ -180,7 +180,7 @@ class Pix2PixModel(BaseModel):
         conv_ver.weight.data = ver_kernel
         for param in conv_ver.parameters():
             param.requires_grad = False
-        conv_ver.to(self.opt.gpu_ids[0])
+        conv_ver.to(self.device)
         ver_detect = conv_ver(input)
 
         return [edge_detect, hor_detect, ver_detect]
@@ -188,35 +188,29 @@ class Pix2PixModel(BaseModel):
     def frequency_division(self,src_img):
         #input:src_img    type:tensor
         #output:image_low,image_high    type:tensor
-        #get low frequency component and high frequency compinent of image
-        fft_src = torch.rfft( src_img.to(self.opt.gpu_ids[0]), signal_ndim=2, onesided=False ).to(self.opt.gpu_ids[0]) 
-        fft_amp = (fft_src[:,:,:,:,0]**2).to(self.opt.gpu_ids[0]) + (fft_src[:,:,:,:,1]**2).to(self.opt.gpu_ids[0])
-        fft_amp = torch.sqrt(fft_amp).to(self.opt.gpu_ids[0])
-        fft_pha = torch.atan2( fft_src[:,:,:,:,1], fft_src[:,:,:,:,0] ).to(self.opt.gpu_ids[0])
+        #get low frequency component and high frequency component of image
+        fft_src = torch.fft.fft2(src_img.to(self.device))
+        fft_amp = torch.sqrt(fft_src.real**2 + fft_src.imag**2)
+        fft_pha = torch.atan2(fft_src.imag, fft_src.real)
 
         # replace the low frequency amplitude part of source with that from target
         _, _, h, w = fft_amp.size()
-        amp_low = torch.zeros(fft_amp.size(), dtype=torch.float).to(self.opt.gpu_ids[0])
-        b = (  np.floor(np.amin((h,w))*0.1)  ).astype(int)     # get b
+        amp_low = torch.zeros(fft_amp.size(), dtype=torch.float).to(self.device)
+        b = (np.floor(np.amin((h,w))*0.1)).astype(int)     # get b
         amp_low[:,:,0:b,0:b]     = fft_amp[:,:,0:b,0:b]      # top left
         amp_low[:,:,0:b,w-b:w]   = fft_amp[:,:,0:b,w-b:w]    # top right
         amp_low[:,:,h-b:h,0:b]   = fft_amp[:,:,h-b:h,0:b]    # bottom left
         amp_low[:,:,h-b:h,w-b:w] = fft_amp[:,:,h-b:h,w-b:w]  # bottom right
-        amp_high = fft_amp.to(self.opt.gpu_ids[0]) - amp_low.to(self.opt.gpu_ids[0])
+        amp_high = fft_amp - amp_low
 
         # recompose fft of source
-        fft_low = torch.zeros( fft_src.size(), dtype=torch.float ).to(self.opt.gpu_ids[0])
-        fft_high = torch.zeros( fft_src.size(), dtype=torch.float ).to(self.opt.gpu_ids[0])
-        fft_low[:,:,:,:,0] = torch.cos(fft_pha).to(self.opt.gpu_ids[0]) * amp_low.to(self.opt.gpu_ids[0])
-        fft_low[:,:,:,:,1] = torch.sin(fft_pha).to(self.opt.gpu_ids[0]) * amp_low.to(self.opt.gpu_ids[0])
-        fft_high[:,:,:,:,0] = torch.cos(fft_pha).to(self.opt.gpu_ids[0]) * amp_high.to(self.opt.gpu_ids[0])
-        fft_high[:,:,:,:,1] = torch.sin(fft_pha).to(self.opt.gpu_ids[0]) * amp_high.to(self.opt.gpu_ids[0])
+        fft_low  = torch.complex(torch.cos(fft_pha) * amp_low,  torch.sin(fft_pha) * amp_low)
+        fft_high = torch.complex(torch.cos(fft_pha) * amp_high, torch.sin(fft_pha) * amp_high)
 
         # get the recomposed image: source content, target style
-        _, _, imgH, imgW = src_img.size()
-        image_low = torch.irfft(fft_low.to(self.opt.gpu_ids[0]), signal_ndim=2, onesided=False, signal_sizes=[imgH,imgW])
-        image_high = torch.irfft(fft_high.to(self.opt.gpu_ids[0]), signal_ndim=2, onesided=False, signal_sizes=[imgH,imgW])
-        return image_low,image_high
+        image_low  = torch.fft.ifft2(fft_low).real
+        image_high = torch.fft.ifft2(fft_high).real
+        return image_low, image_high
 
     def backward_D(self):
         """Calculate GAN loss for the discriminator"""
@@ -300,11 +294,11 @@ class Pix2PixModel(BaseModel):
 
         if 'fft' in self.opt.pattern:
             prenet = torch.load('models/vgg19_conv.pth')
-            self.weight1_1 = prenet['conv1_1.weight'].type(torch.FloatTensor).cuda()
+            self.weight1_1 = prenet['conv1_1.weight'].type(torch.FloatTensor).to(self.device)
             #self.weight1_1 = prenet['conv1_1.weight'].type(torch.FloatTensor)
             fake_low,fake_high = self.frequency_division(self.fake_B)
             real_low,real_high = self.frequency_division(self.real_B)
-            self.loss_G_fft = self.criterionL1(fake_low.to(self.opt.gpu_ids[0]),real_low.to(self.opt.gpu_ids[0]))*self.opt.weight_low_L1+self.criterionL1(fake_high.to(self.opt.gpu_ids[0]),real_high.to(self.opt.gpu_ids[0]))*self.opt.weight_high_L1
+            self.loss_G_fft = self.criterionL1(fake_low.to(self.device),real_low.to(self.device))*self.opt.weight_low_L1+self.criterionL1(fake_high.to(self.device),real_high.to(self.device))*self.opt.weight_high_L1
             self.loss_G += self.loss_G_fft
 
         if 'perc' in self.opt.pattern or 'contextual' in self.opt.pattern:
@@ -325,7 +319,7 @@ class Pix2PixModel(BaseModel):
             # for i in range(len(fake_conv)):
             #     conv_loss += self.criterionL1(fake_conv[i], real_conv[i].detach())
             prenet = torch.load('models/vgg19_conv.pth')
-            self.weight1_1 = prenet['conv1_1.weight'].type(torch.FloatTensor).cuda()
+            self.weight1_1 = prenet['conv1_1.weight'].type(torch.FloatTensor).to(self.device)
             fake_feature = F.conv2d(self.fake_B, self.weight1_1, padding=1)
             real_feature = F.conv2d(self.real_B, self.weight1_1, padding=1)
             conv_loss = self.criterionL1(fake_feature, real_feature)

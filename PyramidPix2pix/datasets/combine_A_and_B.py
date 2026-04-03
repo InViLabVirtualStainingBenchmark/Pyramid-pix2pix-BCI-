@@ -24,7 +24,7 @@ args = parser.parse_args()
 for arg in vars(args):
     print('[%s] = ' % arg, getattr(args, arg))
 
-splits = os.listdir(args.fold_A)
+splits = [s for s in os.listdir(args.fold_A) if os.path.isdir(os.path.join(args.fold_A, s))]
 
 if not args.no_multiprocessing:
     pool=Pool()
